@@ -1,0 +1,196 @@
+---
+title: "Predict publishing date"
+author: "Carsten Behring"
+date: "3 Feb 2015"
+output: html_document
+---
+
+```{r imports, results="hide",message=FALSE}
+library(dplyr)
+library(stringr)
+library(knitr)
+library(pander)
+library(ggplot2)
+set.seed(1234)
+```
+I just read into R the complete export of the register of questions.
+ 
+```{r read data}
+questions <- read.csv("Questions_update20150914134554347.csv",encoding="UTF-8")
+questions$QUESTIONTYPE <-  iconv(questions$QUESTIONTYPE,"UTF-8","ASCII",sub="")
+```
+
+
+As I want to predict the publication date from (potentially) all other variables, lets see how many non empty publication dates we have, to see the maximum of obsevations usable for training.
+
+There are `r sum(str_trim(questions$PUBLISHINGDATE) == '')` observations with empty publishing date, which leaves `r nrow(questions) - sum(str_trim(questions$PUBLISHINGDATE) == '')` usefull observations.
+
+
+```{r}
+observations <- questions %>% filter( str_trim(questions$PUBLISHINGDATE) != '')
+```
+
+## Feature selection
+Which features from the dataset should I use to predict the publishing date.
+The dataset contains the following columns:
+
+```{r}
+ pander(data.frame(names(observations)))
+```
+
+
+From intuition, I select the following:
+
+* UNIT
+* Applicant
+* Reception Date
+* Deadline
+* Foodsectorarea
+* Questiontype
+* Mandatetype
+* MandateRequestor
+
+
+Out of these, the recption date and acceptance date (and the publishing date), I need to recode.
+Leaving them as dates, gives probbaly too little observations 'for each date', so I will recode them as 'months' .
+
+And in reality I dont't want to predict a publishing date, but how long (= how many month ) did the question have between receptiondate date and publishing date.
+
+Lets see first, for how many observations I can calculate this 'duration', so which have both 'reception date' and 'publication date' set.
+
+
+
+
+
+
+```{r}
+ observations <- observations %>% filter( str_trim(observations$RECEPTIONDATE) != '')
+```
+
+We have `r nrow(observations)` where a duration can be calculated.
+
+
+
+An other important feature is the clock stop information. This comes from an other database extract and gets joined with the existing data.
+
+```{r}
+
+clock_stops<-read.csv("Questions_clock_update20150915110216567.csv",stringsAsFactors=F) %>%
+    select( Question.Number,Clock.stop.date,Clock.start.date,Difference..EFSA.working.days.) %>%
+    mutate(Clock.stop.date = as.Date(Clock.stop.date,format="%d/%m/%Y")) %>%
+    mutate(Clock.start.date = as.Date(Clock.start.date,format="%d/%m/%Y")) %>%
+    mutate(Difference..EFSA.working.days. = as.numeric(Difference..EFSA.working.days.)) %>%
+    filter(!is.na(Difference..EFSA.working.days.))
+
+clock_stops_counts <- clock_stops %>%
+    group_by(Question.Number) %>%
+    mutate(count=n()) %>%
+    mutate(total.stopp = sum(Clock.start.date - Clock.stop.date)) %>%
+    mutate(total.stop.wd = sum(Difference..EFSA.working.days.)) %>%
+    rename(QUESTIONNUMBER=Question.Number) %>%
+    select(QUESTIONNUMBER,count,total.stopp,total.stop.wd)
+    
+```
+
+
+```{r}
+durations <- as.numeric(as.Date(as.character(observations$PUBLISHINGDATE),format="%d/%m/%Y") -
+as.Date(as.character(observations$RECEPTIONDATE),format="%d/%m/%Y"))
+
+ observations <- observations %>% mutate(duration= round((as.numeric(as.Date(as.character(PUBLISHINGDATE),format="%d/%m/%Y") -
+                                                                 as.Date(as.character(RECEPTIONDATE),format="%d/%m/%Y"))
+
+
+                                                                 / 30)))
+
+
+observations <- left_join(observations,clock_stops_counts) %>%
+    rename(clock.stop.count=count)
+   
+    
+
+observations <- observations %>%
+    filter(duration > 0) %>%
+    mutate(duration.net = as.numeric(round(duration-(total.stopp/30)))) %>%
+    mutate(duration.net = ifelse(is.na(duration.net),duration,duration.net)) %>%
+    filter(duration.net > 0) %>%
+    mutate(clock.stop.count = ifelse(is.na(clock.stop.count),0,clock.stop.count))
+
+ggplot(observations ,aes(duration)) + geom_bar(binwidth=1)
+ggplot(observations ,aes(duration.net)) + geom_bar(binwidth=1)
+
+```
+
+This show the distribution of the 'durations' in months. The majority is between 1 and 40 months and most durations have several observations, which should allow the training to work reasonably.
+
+
+The following plots show the relationship of all considered variables with the duration.
+
+```{r}
+
+qplot(x=duration,y=UNIT,data=observations)  + geom_jitter()
+qplot(x=duration,y=APPLICANT,data=observations) + geom_jitter()
+qplot(x=duration,y=FOODSECTORAREA,data=observations) + geom_jitter()
+qplot(x=duration,y=QUESTIONTYPE,data=observations) + geom_jitter()
+qplot(x=duration,y=MANDATETYPE,data=observations) + geom_jitter()
+qplot(x=duration,y=MANDATEREQUESTOR,data=observations) + geom_jitter()
+qplot(x=duration,y=clock.stop.count,data=observations) + geom_jitter()
+
+```
+
+From the plots, there are very view obvious correlations between any single variable with the duration. These are:
+
+- UNIT: Pesticides, Nutrition, GMO, FIP units have longer durations then the others
+- APPLICANT: DG Sanco have longest duration and an other group (UK,NL,FR,EFSA) have a longer duration as the rest
+- FOODSECTORAREA: Dietic products and Flavourings have laonger durations then others
+- clockstop.count: Clockstops result in a loger minimal duration
+
+
+I use random forest model to create the first model
+
+```{r}
+library(kernlab)
+library(caret)
+observations.train <- sample_n(observations,10000) 
+inTrain <- createDataPartition(y = observations.train$duration,p=0.75,list=F)
+training <- observations.train[inTrain,]
+testing <- observations.train[-inTrain,]
+fit <- train(duration ~ UNIT + APPLICANT + FOODSECTORAREA + QUESTIONTYPE+ MANDATETYPE + MANDATEREQUESTOR
+            + clock.stop.count, data = training,method = "rf",importance=T)
+
+
+
+
+
+## fit <- ksvm(duration.net ~ UNIT + APPLICANT  + FOODSECTORAREA + MANDATETYPE
+##             + MANDATEREQUESTOR,
+##             observations)
+## predictions <- predict(fit, observations)
+## df<-data.frame(ind=seq_along(observations$duration),obs=observations$duration.net,pred=predictions)
+## qplot(data=df,x=ind,y=obs) + geom_point(aes(x=ind,y=pred,color='red'),data=df)
+
+
+```
+The following plot shows the importance of the top most important variables.
+
+```{r}
+ imp <- varImp(fit)
+ plot(imp,top=20)
+```
+
+Result of training:
+
+```{r}
+fit
+
+fit$finalModel
+
+```
+
+Residual plot:
+```{r}
+testing <- testing[testing$QUESTIONTYPE %in% training$QUESTIONTYPE,]
+
+
+plot(predict(fit,newdata = testing) - testing$duration)
+```
