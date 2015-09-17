@@ -15,7 +15,7 @@ set.seed(1234)
 ```
 I just read into R the complete export of the register of questions.
  
-```{r read data}
+```{r read data, cache=T}
 questions <- read.csv("Questions_update20150914134554347.csv",encoding="UTF-8")
 questions$QUESTIONTYPE <-  iconv(questions$QUESTIONTYPE,"UTF-8","ASCII",sub="")
 ```
@@ -57,10 +57,6 @@ Leaving them as dates, gives probbaly too little observations 'for each date', s
 And in reality I dont't want to predict a publishing date, but how long (= how many month ) did the question have between receptiondate date and publishing date.
 
 Lets see first, for how many observations I can calculate this 'duration', so which have both 'reception date' and 'publication date' set.
-
-
-
-
 
 
 ```{r}
@@ -115,6 +111,8 @@ observations <- observations %>%
     mutate(duration.net = ifelse(is.na(duration.net),duration,duration.net)) %>%
     filter(duration.net > 0) %>%
     mutate(clock.stop.count = ifelse(is.na(clock.stop.count),0,clock.stop.count))
+    
+
 
 ggplot(observations ,aes(duration)) + geom_bar(binwidth=1)
 ggplot(observations ,aes(duration.net)) + geom_bar(binwidth=1)
@@ -148,29 +146,18 @@ From the plots, there are very view obvious correlations between any single vari
 
 I use random forest model to create the first model
 
-```{r}
+```{r cache=T}
 library(kernlab)
 library(caret)
-observations.train <- sample_n(observations,10000) 
+observations.train <- sample_n(observations,500) 
 inTrain <- createDataPartition(y = observations.train$duration,p=0.75,list=F)
 training <- observations.train[inTrain,]
 testing <- observations.train[-inTrain,]
 fit <- train(duration ~ UNIT + APPLICANT + FOODSECTORAREA + QUESTIONTYPE+ MANDATETYPE + MANDATEREQUESTOR
             + clock.stop.count, data = training,method = "rf",importance=T)
 
-
-
-
-
-## fit <- ksvm(duration.net ~ UNIT + APPLICANT  + FOODSECTORAREA + MANDATETYPE
-##             + MANDATEREQUESTOR,
-##             observations)
-## predictions <- predict(fit, observations)
-## df<-data.frame(ind=seq_along(observations$duration),obs=observations$duration.net,pred=predictions)
-## qplot(data=df,x=ind,y=obs) + geom_point(aes(x=ind,y=pred,color='red'),data=df)
-
-
 ```
+
 The following plot shows the importance of the top most important variables.
 
 ```{r}
@@ -188,9 +175,32 @@ fit$finalModel
 ```
 
 Residual plot:
+
 ```{r}
 testing <- testing[testing$QUESTIONTYPE %in% training$QUESTIONTYPE,]
+pred <-  predict(fit,newdata = testing)
 
+residuals <- pred - testing$duration
 
-plot(predict(fit,newdata = testing) - testing$duration)
+plot(residuals)
+hist(residuals)
+
 ```
+
+SME for testing:
+
+```{r}
+ summary(abs(residuals))
+ R2(pred,testing$duration)
+RMSE(pred,testing$duration)
+cor(pred,testing$duration)
+```
+
+The distribution of the absolute residuals
+
+```{r}
+boxplot(abs(residuals))
+```
+
+shows that the mean error of the model is at +/-
+`r mean(abs(residuals))` months.
