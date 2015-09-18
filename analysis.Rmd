@@ -5,12 +5,15 @@ date: "3 Feb 2015"
 output: html_document
 ---
 
-```{r imports, results="hide",message=FALSE}
+```{r imports, results="hide"}
 library(dplyr)
 library(stringr)
 library(knitr)
 library(pander)
 library(ggplot2)
+library(kernlab)
+library(caret)
+
 set.seed(1234)
 ```
 I just read into R the complete export of the register of questions.
@@ -147,8 +150,6 @@ From the plots, there are very view obvious correlations between any single vari
 I use random forest model to create the first model
 
 ```{r cache=T}
-library(kernlab)
-library(caret)
 observations.train <- sample_n(observations,500) 
 inTrain <- createDataPartition(y = observations.train$duration,p=0.75,list=F)
 training <- observations.train[inTrain,]
