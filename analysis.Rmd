@@ -13,7 +13,8 @@ library(pander)
 library(ggplot2)
 library(kernlab)
 library(caret)
-
+library(doMC)
+registerDoMC(4)
 set.seed(1234)
 ```
 I just read into R the complete export of the register of questions.
@@ -21,16 +22,21 @@ I just read into R the complete export of the register of questions.
 ```{r read data, cache=T}
 questions <- read.csv("Questions_update20150914134554347.csv",encoding="UTF-8")
 questions$QUESTIONTYPE <-  iconv(questions$QUESTIONTYPE,"UTF-8","ASCII",sub="")
+
+questions <- questions %>%
+    mutate(RECEPTIONDATE = as.Date(RECEPTIONDATE,format="%d/%m/%Y")) %>%
+    mutate(PUBLISHINGDATE = as.Date(PUBLISHINGDATE,format="%d/%m/%Y")) %>%
+    mutate(reception.dayoffset=as.numeric(RECEPTIONDATE - as.Date("2000-01-01")))
 ```
 
 
 As I want to predict the publication date from (potentially) all other variables, lets see how many non empty publication dates we have, to see the maximum of obsevations usable for training.
 
-There are `r sum(str_trim(questions$PUBLISHINGDATE) == '')` observations with empty publishing date, which leaves `r nrow(questions) - sum(str_trim(questions$PUBLISHINGDATE) == '')` usefull observations.
+There are `r sum(is.na(questions$PUBLISHINGDATE))` observations with empty publishing date, which leaves `r nrow(questions) - sum(is.na(questions$PUBLISHINGDATE))` usefull observations.
 
 
 ```{r}
-observations <- questions %>% filter( str_trim(questions$PUBLISHINGDATE) != '')
+observations <- questions %>% filter(!is.na(questions$PUBLISHINGDATE))
 ```
 
 ## Feature selection
@@ -63,7 +69,7 @@ Lets see first, for how many observations I can calculate this 'duration', so wh
 
 
 ```{r}
- observations <- observations %>% filter( str_trim(observations$RECEPTIONDATE) != '')
+ observations <- observations %>% filter( !is.na(observations$RECEPTIONDATE))
 ```
 
 We have `r nrow(observations)` where a duration can be calculated.
@@ -93,14 +99,10 @@ clock_stops_counts <- clock_stops %>%
 
 
 ```{r}
-durations <- as.numeric(as.Date(as.character(observations$PUBLISHINGDATE),format="%d/%m/%Y") -
-as.Date(as.character(observations$RECEPTIONDATE),format="%d/%m/%Y"))
+durations <- as.numeric(observations$PUBLISHINGDATE -observations$RECEPTIONDATE)
 
- observations <- observations %>% mutate(duration= round((as.numeric(as.Date(as.character(PUBLISHINGDATE),format="%d/%m/%Y") -
-                                                                 as.Date(as.character(RECEPTIONDATE),format="%d/%m/%Y"))
-
-
-                                                                 / 30)))
+observations <- observations %>%
+    mutate(duration= round((as.numeric(PUBLISHINGDATE -  RECEPTIONDATE)) / 30))
 
 
 observations <- left_join(observations,clock_stops_counts) %>%
@@ -136,7 +138,8 @@ qplot(x=duration,y=QUESTIONTYPE,data=observations) + geom_jitter()
 qplot(x=duration,y=MANDATETYPE,data=observations) + geom_jitter()
 qplot(x=duration,y=MANDATEREQUESTOR,data=observations) + geom_jitter()
 qplot(x=duration,y=clock.stop.count,data=observations) + geom_jitter()
-
+qplot(x=duration,y=reception.dayoffset,data=observations) + geom_jitter()
+qplot(x=duration,y=months(observations$RECEPTIONDATE),data=observations) + geom_jitter()
 ```
 
 From the plots, there are very view obvious correlations between any single variable with the duration. These are:
@@ -150,12 +153,12 @@ From the plots, there are very view obvious correlations between any single vari
 I use random forest model to create the first model
 
 ```{r cache=T}
-observations.train <- sample_n(observations,500) 
+observations.train <- sample_n(observations,1000) 
 inTrain <- createDataPartition(y = observations.train$duration,p=0.75,list=F)
 training <- observations.train[inTrain,]
 testing <- observations.train[-inTrain,]
-fit <- train(duration ~ UNIT + APPLICANT + FOODSECTORAREA + QUESTIONTYPE+ MANDATETYPE + MANDATEREQUESTOR
-            + clock.stop.count, data = training,method = "rf",importance=T)
+fit <- train(duration ~ UNIT + APPLICANT + FOODSECTORAREA + QUESTIONTYPE+ MANDATETYPE + MANDATEREQUESTOR 
+            + clock.stop.count + reception.dayoffset + months(RECEPTIONDATE), data = training,method = "rf",importance=T)
 
 ```
 
